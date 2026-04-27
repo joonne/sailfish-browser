@@ -35,7 +35,7 @@
 #include <qmozwindow.h>
 #include <qmozsecurity.h>
 
-#include <MDConfItem>
+#include "mdconfitemcompat.h"
 
 #include <qpa/qplatformnativeinterface.h>
 #include <libsailfishpolicy/policyvalue.h>

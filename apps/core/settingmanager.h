@@ -16,7 +16,7 @@
 #include <QScopedPointer>
 #include <QJSValue>
 
-class MDConfItem;
+#include "mdconfitemcompat.h"
 
 class SettingManager : public QObject
 {

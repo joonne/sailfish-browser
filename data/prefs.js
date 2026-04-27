@@ -6,3 +6,5 @@ user_pref("dom.meta-viewport.enabled", true);
 user_pref("intl.locale.requested", "");
 user_pref("browser.download.useDownloadDir", true);
 user_pref("browser.download.dir", "~/Downloads");
+user_pref("dom.serviceWorkers.enabled", true);
+user_pref("dom.caches.enabled", true);

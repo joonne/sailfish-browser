@@ -88,7 +88,9 @@ Browser::Browser(QQuickView *view, const QString &dataPath, QObject *parent)
     d->view->rootContext()->setContextProperty("Settings", SettingManager::instance());
     d->view->rootContext()->setContextProperty("DownloadManager", downloadManager);
 
-    QString mainQml = BrowserAppInfo::captivePortal() ? "captiveportal.qml" : "browser.qml";
+    QString mainQml = BrowserAppInfo::webApp() ? "webapp.qml"
+                    : BrowserAppInfo::captivePortal() ? "captiveportal.qml"
+                    : "browser.qml";
 
 #ifdef USE_RESOURCES
     d->view->setSource(QUrl(QString("qrc:///") + mainQml));
@@ -100,6 +102,12 @@ Browser::Browser(QQuickView *view, const QString &dataPath, QObject *parent)
 void Browser::load()
 {
     Q_ASSERT_X(qGuiApp, Q_FUNC_INFO, "There should always be a QGuiApplication running.");
+
+    if (BrowserAppInfo::webApp()) {
+        DeclarativeWebUtils::instance()->openUrl(BrowserAppInfo::webAppUrl());
+        return;
+    }
+
     const QStringList arguments = qGuiApp->arguments();
     if (!arguments.contains(QStringLiteral("-prestart"))) {
         if (arguments.count() > 1 && (arguments.last() != QStringLiteral("-debugMode"))) {

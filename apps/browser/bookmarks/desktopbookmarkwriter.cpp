@@ -10,6 +10,8 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <QDir>
+#include <QCryptographicHash>
+#include <QUrl>
 #include <QtConcurrent>
 
 #include "desktopbookmarkwriter.h"
@@ -129,4 +131,68 @@ QString DesktopBookmarkWriter::write(const QString &url, const QString &title, c
 QString DesktopBookmarkWriter::desktopFilePattern()
 {
     return QStringLiteral("sailfish-browser-%2-%3.desktop");
+}
+
+void DesktopBookmarkWriter::saveAsWebApp(const QString &url, const QString &title, const QString &icon)
+{
+    QString effectiveIcon = icon;
+    if (url.trimmed().isEmpty() || title.trimmed().isEmpty()) {
+        emit saved(QString());
+        return;
+    }
+
+    if (icon.isEmpty()) {
+        effectiveIcon = FaviconManager::defaultDesktopBookmarkIcon();
+    }
+
+    if (icon.startsWith(QStringLiteral("https://")) || icon.startsWith(QStringLiteral("http://"))) {
+        DataFetcher *fetcher = new DataFetcher(this);
+        connect(fetcher, &DataFetcher::statusChanged,
+                this, [this, url, title, fetcher]() {
+            if (fetcher->status() == DataFetcher::Error) {
+                m_writer.setFuture(QtConcurrent::run(this, &DesktopBookmarkWriter::writeWebApp, url, title,
+                                                     FaviconManager::defaultDesktopBookmarkIcon()));
+            } else if (fetcher->status() == DataFetcher::Ready) {
+                m_writer.setFuture(QtConcurrent::run(this, &DesktopBookmarkWriter::writeWebApp, url, title,
+                                                     fetcher->data()));
+            }
+        });
+        fetcher->fetch(icon);
+    } else {
+        m_writer.setFuture(QtConcurrent::run(this, &DesktopBookmarkWriter::writeWebApp, url, title, effectiveIcon));
+    }
+}
+
+QString DesktopBookmarkWriter::writeWebApp(const QString &url, const QString &title, const QString &icon)
+{
+    // Derive a stable webapp ID from the URL origin
+    QUrl parsedUrl(url);
+    QString origin = parsedUrl.scheme() + QStringLiteral("://") + parsedUrl.host();
+    if (parsedUrl.port() != -1) {
+        origin += QStringLiteral(":") + QString::number(parsedUrl.port());
+    }
+    QByteArray hash = QCryptographicHash::hash(origin.toUtf8(), QCryptographicHash::Sha1);
+    QString webAppId = QString::fromLatin1(hash.toHex().left(12));
+    QString serviceName = QStringLiteral("org.sailfishos.browser.webapp.w") + webAppId;
+
+    QString fileName = uniqueDesktopFileName(title);
+    QString desktopFileData = QString("[Desktop Entry]\n" \
+                                      "Type=Application\n" \
+                                      "Name=%1\n" \
+                                      "Icon=%2\n" \
+                                      "Exec=/usr/bin/sailfish-browser -webapp %3\n" \
+                                      "Comment=%4\n" \
+                                      "X-Maemo-Service=%5\n" \
+                                      "X-Maemo-Method=%5.openUrl\n").arg(title.trimmed(), icon,
+                                                                         url.trimmed(), title.trimmed(),
+                                                                         serviceName);
+    QFile desktopFile(fileName);
+    if (desktopFile.open(QFile::WriteOnly)) {
+        desktopFile.write(desktopFileData.toUtf8());
+        desktopFile.flush();
+        desktopFile.close();
+        return fileName;
+    }
+
+    return QString();
 }
