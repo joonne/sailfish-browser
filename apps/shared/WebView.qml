@@ -25,6 +25,7 @@ WebContainer {
     id: webView
 
     property bool activePortalMode
+    property bool webAppMode: false
     readonly property bool moving: contentItem && contentItem.moving
     property bool portrait: true
     property bool contentFullscreen: contentItem && contentItem.fullscreen
@@ -39,6 +40,7 @@ WebContainer {
     property var resourceController: ResourceController {
         webPage: contentItem
         background: !webView.visible
+        webApp: webView.webAppMode
     }
 
     property var _webPageCreator: WebPageCreator {
