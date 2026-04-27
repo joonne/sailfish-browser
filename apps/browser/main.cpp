@@ -19,6 +19,7 @@
 #include <QDBusPendingCall>
 
 #include "browser.h"
+#include "browserappinfo.h"
 // Registered QML types
 #include "declarativebookmarkmodel.h"
 #include "bookmarkfiltermodel.h"
@@ -138,7 +139,11 @@ Q_DECL_EXPORT int main(int argc, char *argv[])
     //% "Browser"
     view->setTitle(qtTrId("sailfish-browser-ap-name"));
 
-    app->setApplicationName(QStringLiteral("browser"));
+    if (BrowserAppInfo::webApp()) {
+        app->setApplicationName(QStringLiteral("webapp-") + BrowserAppInfo::webAppId());
+    } else {
+        app->setApplicationName(QStringLiteral("browser"));
+    }
     app->setOrganizationName(QStringLiteral("org.sailfishos"));
 
     const char *uri = "Sailfish.Browser";

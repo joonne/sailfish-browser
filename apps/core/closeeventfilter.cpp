@@ -15,7 +15,7 @@
 #include "dbmanager.h"
 
 #include <QCoreApplication>
-#include <MDConfItem>
+#include "mdconfitemcompat.h"
 
 CloseEventFilter::CloseEventFilter(DownloadManager *dlMgr, QObject *parent)
     : QObject(parent),

@@ -12,6 +12,7 @@
 
 #include "browserservice.h"
 #include "browserservice_p.h"
+#include "browserappinfo.h"
 #include "declarativewebcontainer.h"
 #include "logging.h"
 
@@ -54,6 +55,9 @@ bool BrowserService::registered() const
 
 QString BrowserService::serviceName() const
 {
+    if (BrowserAppInfo::webApp()) {
+        return QStringLiteral("org.sailfishos.browser.webapp.w") + BrowserAppInfo::webAppId();
+    }
     return QStringLiteral("org.sailfishos.browser");
 }
 
@@ -145,7 +149,7 @@ BrowserUIService::BrowserUIService(QObject *parent)
     new UIServiceDBusAdaptor(this);
     QDBusConnection connection = QDBusConnection::sessionBus();
     if (!connection.registerObject("/ui", this) ||
-            !connection.registerService(SailfishBrowserUiService)) {
+            !connection.registerService(serviceName())) {
         d->registered = false;
     }
 }
@@ -159,6 +163,9 @@ bool BrowserUIService::registered() const
 
 QString BrowserUIService::serviceName() const
 {
+    if (BrowserAppInfo::webApp()) {
+        return QStringLiteral("org.sailfishos.browser.webapp.w") + BrowserAppInfo::webAppId() + QStringLiteral(".ui");
+    }
     return SailfishBrowserUiService;
 }
 

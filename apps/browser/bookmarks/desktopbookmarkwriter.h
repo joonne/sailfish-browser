@@ -27,6 +27,7 @@ public:
     static bool isTestModeEnabled();
 
     Q_INVOKABLE void save(const QString &url, const QString &title, const QString &icon);
+    Q_INVOKABLE void saveAsWebApp(const QString &url, const QString &title, const QString &icon);
 
 signals:
     void saved(const QString &desktopFile);
@@ -37,6 +38,7 @@ private slots:
 private:
     QString uniqueDesktopFileName(QString title);
     QString write(const QString &url, const QString &title, const QString &icon);
+    QString writeWebApp(const QString &url, const QString &title, const QString &icon);
 
     QFutureWatcher<QString> m_writer;
 

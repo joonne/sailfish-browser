@@ -13,7 +13,7 @@
 #include "opensearchconfigs.h"
 #include "faviconmanager.h"
 
-#include <MDConfItem>
+#include "mdconfitemcompat.h"
 #include <QVariant>
 
 #include <webengine.h>

@@ -15,7 +15,7 @@
 #include <QString>
 #include <QFile>
 
-#include <MDConfItem>
+#include "mdconfitemcompat.h"
 #include <webengine.h>
 
 const auto SEARCH_ENGINE_CONFIG = QStringLiteral("/apps/sailfish-browser/settings/search_engine");
