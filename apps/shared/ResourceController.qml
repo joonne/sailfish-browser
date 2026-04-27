@@ -25,6 +25,7 @@ Item {
     property bool audioActive
     readonly property alias displayOff: screenBlanked.blanked
     property bool background
+    property bool webApp: false
 
     property string _mediaState: "pause"
     property string _lastStateOwner
@@ -68,14 +69,14 @@ Item {
     }
 
     onAudioActiveChanged: {
-        if (!audioActive && screenBlanked.blanked) {
+        if (!audioActive && !webApp && screenBlanked.blanked) {
             delayedSuspend.suspendIntention = true
         }
     }
 
     // This is behind 1000ms timer
     onBackgroundChanged: {
-        if (!audioActive && background) {
+        if (!audioActive && !webApp && background) {
             suspendView()
         } else if (!background) {
             resumeView()
@@ -144,7 +145,7 @@ Item {
         signalsEnabled: true
 
         onBlankedChanged: {
-            if (blanked && !audioActive) {
+            if (blanked && !audioActive && !webApp) {
                 delayedSuspend.suspendIntention = true
             } else {
                 // Return immediately from suspend.
@@ -185,7 +186,7 @@ Item {
     }
 
     Permissions {
-        enabled: audioActive || videoActive
+        enabled: audioActive || videoActive || webApp
         applicationClass: "player"
         autoRelease: true
 

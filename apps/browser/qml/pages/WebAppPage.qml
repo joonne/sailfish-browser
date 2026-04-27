@@ -109,6 +109,7 @@ Page {
         rotationHandler: browserPage
         imOpened: virtualKeyboardObserver.opened
         canShowSelectionMarkers: false
+        webAppMode: true
 
         onForegroundChanged: {
             if (foreground && webView.chromeWindow) {
