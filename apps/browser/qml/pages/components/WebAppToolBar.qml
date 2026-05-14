@@ -94,24 +94,17 @@ Column {
 
             height: parent.height
             expandedWidth: toolBarRow.iconWidth
-            icon.source: "image://theme/icon-m-levels"
-            onTapped: webAppMenu.open(menuButton)
-        }
-    }
-
-    ContextMenu {
-        id: webAppMenu
-
-        MenuItem {
-            //% "Open in Browser"
-            text: qsTrId("sailfish_browser-me-webapp_open_in_browser")
-            onClicked: toolBarRow.openInBrowser()
-        }
-
-        MenuItem {
-            //% "Close"
-            text: qsTrId("sailfish_browser-me-webapp_close")
-            onClicked: toolBarRow.closeRequested()
+            icon.source: "image://theme/icon-m-menu"
+            onTapped: {
+                var dialog = pageStack.push(Qt.resolvedUrl("../WebAppMenuDialog.qml"))
+                dialog.accepted.connect(function() {
+                    if (dialog.action === "browser") {
+                        toolBarRow.openInBrowser()
+                    } else if (dialog.action === "close") {
+                        toolBarRow.closeRequested()
+                    }
+                })
+            }
         }
     }
 }
