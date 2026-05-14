@@ -125,6 +125,45 @@ Item {
 
             OverlayListItem {
                 height: Theme.itemSizeSmall
+                iconWidth: root.iconWidth
+                horizontalOffset: root.horizontalOffset
+                iconSource: "image://theme/icon-m-device"
+                //% "Save as web app"
+                text: qsTrId("sailfish_browser-la-save_as_web_app")
+                onClicked: {
+                    overlay.animator.showChrome()
+                    var page = webView.contentItem
+
+                    if (!page.favicon) {
+                        var stack = pageStack
+                        var writer = desktopBookmarkWriter
+
+                        function handleThumbnailResult(data) {
+                            stack.animatorPush("SaveAsWebAppDialog.qml", {
+                                "url": page.url,
+                                "title": page.title,
+                                "icon": data,
+                                "desktopBookmarkWriter": writer,
+                                "bookmarkWriterParent": stack
+                            })
+                        }
+
+                        page.onThumbnailResult.connect(handleThumbnailResult)
+                        page.grabThumbnail(Qt.size(256, 256))
+                    } else {
+                        pageStack.animatorPush("SaveAsWebAppDialog.qml", {
+                            "url": url,
+                            "title": title,
+                            "icon": page.favicon,
+                            "desktopBookmarkWriter": desktopBookmarkWriter,
+                            "bookmarkWriterParent": pageStack
+                        })
+                    }
+                }
+            }
+
+            OverlayListItem {
+                height: Theme.itemSizeSmall
                 enabled: webView.contentItem
                 opacity: enabled ? 1.0 : 0.5
                 iconWidth: root.iconWidth
