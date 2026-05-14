@@ -162,6 +162,7 @@ WebContainer {
         webPage: contentItem
         background: !webView.visible
         webApp: webView.webAppMode
+        pageTitle: contentItem ? contentItem.title : ""
     }
 
     property var _webPageCreator: WebPageCreator {

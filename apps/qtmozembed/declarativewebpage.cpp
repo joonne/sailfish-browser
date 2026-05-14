@@ -89,6 +89,11 @@ DeclarativeWebPage::DeclarativeWebPage(QObject *parent)
         loadFrameScript("file:///usr/share/sailfish-captiveportal/pages/captiveportal.js");
     }
 
+    if (BrowserAppInfo::webApp()) {
+        loadFrameScript("file:///usr/share/sailfish-browser/data/media-control.js");
+        addMessageListener("embed:media-session-metadata");
+    }
+
     connect(this, &DeclarativeWebPage::recvAsyncMessage,
             this, &DeclarativeWebPage::onRecvAsyncMessage);
     connect(&m_grabWriter, &QFutureWatcher<QString>::finished, this, &DeclarativeWebPage::handleFileGrabFile);

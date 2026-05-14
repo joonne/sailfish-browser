@@ -10,3 +10,9 @@ Makefile
 *.ts
 RPMS/*
 sailfish-browser.pro.user
+tests/auto/tst_*/tst_*
+tests/auto/tst_webview/qrc_*.cpp
+apps/browser/sailfish-browser
+apps/captiveportal/sailfish-captiveportal
+backup-unit/vault-browser
+documentation.list

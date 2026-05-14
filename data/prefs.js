@@ -8,3 +8,4 @@ user_pref("browser.download.useDownloadDir", true);
 user_pref("browser.download.dir", "~/Downloads");
 user_pref("dom.serviceWorkers.enabled", true);
 user_pref("dom.caches.enabled", true);
+user_pref("dom.media.mediasession.enabled", true);

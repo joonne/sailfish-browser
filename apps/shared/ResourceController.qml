@@ -26,6 +26,8 @@ Item {
     readonly property alias displayOff: screenBlanked.blanked
     property bool background
     property bool webApp: false
+    property string pageTitle: ""
+    property bool _hasMediaSessionMetadata: false
 
     property string _mediaState: "pause"
     property string _lastStateOwner
@@ -34,6 +36,38 @@ Item {
     property bool _isVideoStream
     property bool _webrtcAudioActive
     property bool _webrtcVideoActive
+
+    // MPRIS integration: update playback state and handle commands
+    Connections {
+        target: (webApp && MprisPlayer) ? MprisPlayer : null
+
+        onPlayRequested: {
+            if (webPage) {
+                webPage.sendAsyncMessage("embedui:media-control", {"action": "play"})
+            }
+        }
+        onPauseRequested: {
+            if (webPage) {
+                webPage.sendAsyncMessage("embedui:media-control", {"action": "pause"})
+            }
+        }
+        onPlayPauseRequested: {
+            if (webPage) {
+                var action = _mediaState === "play" ? "pause" : "play"
+                webPage.sendAsyncMessage("embedui:media-control", {"action": action})
+            }
+        }
+        onNextRequested: {
+            if (webPage) {
+                webPage.sendAsyncMessage("embedui:media-control", {"action": "nexttrack"})
+            }
+        }
+        onPreviousRequested: {
+            if (webPage) {
+                webPage.sendAsyncMessage("embedui:media-control", {"action": "previoustrack"})
+            }
+        }
+    }
 
     function calculateStatus() {
         var video = _webrtcVideoActive
@@ -83,6 +117,23 @@ Item {
         }
     }
 
+    // Listen for media session metadata from frame script
+    Connections {
+        target: (webApp && webPage) ? webPage : null
+
+        onRecvAsyncMessage: {
+            if (message === "embed:media-session-metadata" && MprisPlayer) {
+                var meta = data
+                MprisPlayer.setMetadata(
+                    meta.title || "",
+                    meta.artist || "",
+                    meta.artwork || ""
+                )
+                _hasMediaSessionMetadata = true
+            }
+        }
+    }
+
     Connections {
         target: WebEngine
 
@@ -100,6 +151,18 @@ Item {
                 } else {
                     _mediaState = data.state
                     _lastStateOwner = data.owner
+                    // Update MPRIS playback state
+                    if (webApp && MprisPlayer) {
+                        MprisPlayer.setPlaybackState(data.state)
+                        if (data.state === "play") {
+                            MprisPlayer.setCanGoNext(true)
+                            MprisPlayer.setCanGoPrevious(true)
+                            // Set page title as fallback metadata if no MediaSession metadata
+                            if (!_hasMediaSessionMetadata) {
+                                MprisPlayer.setMetadata(pageTitle, "", "")
+                            }
+                        }
+                    }
                 }
                 calculateStatus()
             } else if (message === "webrtc-media-info") {

@@ -16,6 +16,7 @@
 #include "downloadmanager.h"
 #include "settingmanager.h"
 #include "browserappinfo.h"
+#include "mprisplayer.h"
 
 #include <QDir>
 #include <QGuiApplication>
@@ -87,6 +88,13 @@ Browser::Browser(QQuickView *view, const QString &dataPath, QObject *parent)
     d->view->rootContext()->setContextProperty("WebUtils", utils);
     d->view->rootContext()->setContextProperty("Settings", SettingManager::instance());
     d->view->rootContext()->setContextProperty("DownloadManager", downloadManager);
+
+    if (BrowserAppInfo::webApp()) {
+        MprisPlayer *mprisPlayer = new MprisPlayer(this);
+        d->view->rootContext()->setContextProperty("MprisPlayer", mprisPlayer);
+    } else {
+        d->view->rootContext()->setContextProperty("MprisPlayer", nullptr);
+    }
 
     QString mainQml = BrowserAppInfo::webApp() ? "webapp.qml"
                     : BrowserAppInfo::captivePortal() ? "captiveportal.qml"
