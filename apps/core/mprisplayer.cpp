@@ -3,14 +3,36 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mprisplayer.h"
+#include "browserappinfo.h"
 
 #include <QDBusAbstractAdaptor>
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QCoreApplication>
+#include <QUrl>
 #include <QDebug>
 
-static const QString MprisServiceName = QStringLiteral("org.mpris.MediaPlayer2.sailfish-browser");
+static QString mprisServiceName()
+{
+    if (BrowserAppInfo::webApp()) {
+        return QStringLiteral("org.mpris.MediaPlayer2.sailfish-browser.w") + BrowserAppInfo::webAppId();
+    }
+    return QStringLiteral("org.mpris.MediaPlayer2.sailfish-browser");
+}
+
+static QString mprisIdentity()
+{
+    if (BrowserAppInfo::webApp()) {
+        QUrl url(BrowserAppInfo::webAppUrl());
+        QString host = url.host();
+        if (host.startsWith(QStringLiteral("www.")))
+            host = host.mid(4);
+        if (!host.isEmpty())
+            return host;
+    }
+    return QStringLiteral("Sailfish Browser");
+}
+
 static const QString MprisObjectPath = QStringLiteral("/org/mpris/MediaPlayer2");
 static const QString MprisRootInterface = QStringLiteral("org.mpris.MediaPlayer2");
 static const QString MprisPlayerInterface = QStringLiteral("org.mpris.MediaPlayer2.Player");
@@ -40,7 +62,7 @@ public:
     bool canQuit() const { return false; }
     bool canRaise() const { return true; }
     bool hasTrackList() const { return false; }
-    QString identity() const { return QStringLiteral("Sailfish Browser"); }
+    QString identity() const { return mprisIdentity(); }
     QString desktopEntry() const { return QStringLiteral("sailfish-browser"); }
 
 public slots:
@@ -125,19 +147,20 @@ void MprisPlayer::registerService()
         qWarning() << "[MPRIS] Failed to register object path";
         return;
     }
-    if (!bus.registerService(MprisServiceName)) {
-        qWarning() << "[MPRIS] Failed to register service name:" << MprisServiceName;
+    const QString serviceName = mprisServiceName();
+    if (!bus.registerService(serviceName)) {
+        qWarning() << "[MPRIS] Failed to register service name:" << serviceName;
         return;
     }
     m_registered = true;
-    qDebug() << "[MPRIS] Registered:" << MprisServiceName;
+    qDebug() << "[MPRIS] Registered:" << serviceName;
 }
 
 void MprisPlayer::unregisterService()
 {
     if (m_registered) {
         QDBusConnection bus = QDBusConnection::sessionBus();
-        bus.unregisterService(MprisServiceName);
+        bus.unregisterService(mprisServiceName());
         bus.unregisterObject(MprisObjectPath);
         m_registered = false;
     }
