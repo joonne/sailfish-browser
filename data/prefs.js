@@ -7,3 +7,4 @@ user_pref("dom.meta-viewport.enabled", true);
 user_pref("intl.locale.requested", "");
 user_pref("dom.serviceWorkers.enabled", true);
 user_pref("dom.caches.enabled", true);
+user_pref("dom.media.mediasession.enabled", true);
