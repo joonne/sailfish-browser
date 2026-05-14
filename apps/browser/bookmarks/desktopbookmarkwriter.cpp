@@ -12,6 +12,7 @@
 #include <QDir>
 #include <QCryptographicHash>
 #include <QUrl>
+#include <QFile>
 #include <QtConcurrent>
 
 #include "desktopbookmarkwriter.h"
@@ -176,21 +177,43 @@ QString DesktopBookmarkWriter::writeWebApp(const QString &url, const QString &ti
     QString serviceName = QStringLiteral("org.sailfishos.browser.webapp.w") + webAppId;
 
     QString fileName = uniqueDesktopFileName(title);
-    QString desktopFileData = QString("[Desktop Entry]\n" \
-                                      "Type=Application\n" \
-                                      "Name=%1\n" \
-                                      "Icon=%2\n" \
-                                      "Exec=/usr/bin/sailfish-browser -webapp %3\n" \
-                                      "Comment=%4\n" \
-                                      "X-Maemo-Service=%5\n" \
-                                      "X-Maemo-Method=%5.openUrl\n").arg(title.trimmed(), icon,
-                                                                         url.trimmed(), title.trimmed(),
-                                                                         serviceName);
+    QString desktopFileData = QString("[Desktop Entry]\n"
+                                      "Type=Application\n"
+                                      "Name=%1\n"
+                                      "Icon=%2\n"
+                                      "Exec=/usr/bin/sailfish-browser -webapp %3\n"
+                                      "Comment=%4\n").arg(title.trimmed(), icon,
+                                                          url.trimmed(), title.trimmed());
+    desktopFileData += QString("X-Maemo-Service=%1\n"
+                               "X-Maemo-Object-Path=/ui\n"
+                               "X-Maemo-Method=%1.openUrl\n").arg(serviceName);
+    desktopFileData += QStringLiteral("X-Nemo-Application-Type=no-invoker\n"
+                                       "\n"
+                                       "[X-Sailjail]\n"
+                                       "Permissions=WebView;Audio;Internet\n"
+                                       "OrganizationName=org.sailfishos\n");
+    desktopFileData += QString("ApplicationName=webapp-%1\n").arg(webAppId);
+
     QFile desktopFile(fileName);
     if (desktopFile.open(QFile::WriteOnly)) {
         desktopFile.write(desktopFileData.toUtf8());
         desktopFile.flush();
         desktopFile.close();
+
+        // Create D-Bus service file for lipstick auto-activation
+        QString dbusServiceDir = QDir::homePath() + QStringLiteral("/.local/share/dbus-1/services");
+        QDir().mkpath(dbusServiceDir);
+        QString dbusServiceFile = dbusServiceDir + QStringLiteral("/") + serviceName + QStringLiteral(".service");
+        QString dbusServiceData = QString("[D-BUS Service]\n"
+                                          "Name=%1\n"
+                                          "Exec=/usr/bin/sailfish-browser -webapp %2\n").arg(serviceName, url.trimmed());
+        QFile dbusFile(dbusServiceFile);
+        if (dbusFile.open(QFile::WriteOnly)) {
+            dbusFile.write(dbusServiceData.toUtf8());
+            dbusFile.flush();
+            dbusFile.close();
+        }
+
         return fileName;
     }
 
