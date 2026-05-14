@@ -23,22 +23,6 @@ Page {
     property alias webView: webView
     property alias inputRegion: inputRegion
 
-    // Webapp origin for navigation restriction — set once from the initial URL
-    property string webAppOrigin: ""
-
-    function _extractOrigin(urlStr) {
-        var protocolEnd = urlStr.indexOf("://")
-        if (protocolEnd > 0) {
-            var rest = urlStr.substring(protocolEnd + 3)
-            var pathStart = rest.indexOf("/")
-            if (pathStart > 0) {
-                return urlStr.substring(0, protocolEnd + 3 + pathStart)
-            }
-            return urlStr.substring(0, protocolEnd + 3 + rest.length)
-        }
-        return ""
-    }
-
     cutoutMode: CutoutMode.FullScreen
 
     function load(url, title) {
@@ -153,51 +137,6 @@ Page {
         }
     }
 
-    // Dialog shown when user navigates outside the webapp origin
-    Component {
-        id: externalNavigationDialog
-
-        Dialog {
-            id: dialog
-            property string targetUrl
-
-            Column {
-                width: parent.width
-                spacing: Theme.paddingLarge
-
-                DialogHeader {
-                    //% "Open in Browser"
-                    acceptText: qsTrId("sailfish_browser-he-open_in_browser")
-                }
-
-                Label {
-                    x: Theme.horizontalPageMargin
-                    width: parent.width - 2 * x
-                    wrapMode: Text.Wrap
-                    //% "This link will open in a new browser window"
-                    text: qsTrId("sailfish_browser-la-open_in_new_window")
-                    color: Theme.highlightColor
-                }
-
-                Label {
-                    x: Theme.horizontalPageMargin
-                    width: parent.width - 2 * x
-                    wrapMode: Text.Wrap
-                    text: dialog.targetUrl
-                    color: Theme.secondaryHighlightColor
-                    font.pixelSize: Theme.fontSizeSmall
-                    truncationMode: TruncationMode.Fade
-                    maximumLineCount: 3
-                }
-            }
-
-            onAccepted: {
-                // Open in main browser via D-Bus
-                Qt.openUrlExternally(dialog.targetUrl)
-            }
-        }
-    }
-
     IconButton {
         id: fullscreenClose
 
@@ -295,31 +234,6 @@ Page {
         onTriggered: {
             if (overlay.animator.opened && !webView.loading) {
                 overlay.animator.showFullscreen()
-            }
-        }
-    }
-
-    // Intercept navigation outside the webapp origin
-    Connections {
-        target: webView
-        onUrlChanged: {
-            if (!webView.url)
-                return
-
-            var currentUrl = webView.url.toString()
-
-            // Capture the origin from the first real URL
-            if (browserPage.webAppOrigin === "") {
-                browserPage.webAppOrigin = browserPage._extractOrigin(currentUrl)
-                return
-            }
-
-            var currentOrigin = browserPage._extractOrigin(currentUrl)
-            if (currentOrigin !== "" && currentOrigin !== browserPage.webAppOrigin) {
-                // Navigate back to the previous (in-origin) page
-                webView.goBack()
-                // Show dialog offering to open in main browser
-                pageStack.push(externalNavigationDialog, { "targetUrl": currentUrl })
             }
         }
     }
