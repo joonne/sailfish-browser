@@ -10,7 +10,7 @@ import "shared"
 BrowserWindow {
     id: window
 
-    cover: null
+    cover: Qt.resolvedUrl("cover/WebAppCover.qml")
 
     //% "Web App"
     activityDisabledByMdm: qsTrId("sailfish_browser-la-web_app")
