@@ -26,6 +26,7 @@ Dialog {
     property int _cacheUsage
 
     acceptDestinationAction: PageStackAction.Pop
+    // acceptDestination: set in PrivacySettingsPage
 
     SilicaFlickable {
         anchors.fill: parent

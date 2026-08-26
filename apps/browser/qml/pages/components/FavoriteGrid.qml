@@ -94,20 +94,18 @@ IconGridViewBase {
         onClicked: favoriteGrid.load(model.url, model.title)
         onShowContextMenuChanged: {
             if (showContextMenu) {
-                openMenu(
-                            {
-                                "view": favoriteGrid,
-                                "delegate": favoriteItem,
-                                "title": model.title,
-                                "url": model.url,
-                                "index": model.index
-                            })
+                openMenu({
+                             "view": favoriteGrid,
+                             "delegate": favoriteItem,
+                             "title": model.title,
+                             "url": model.url,
+                             "index": model.index
+                         })
             }
         }
 
         GridView.onAdd: AddAnimation { target: favoriteItem }
     }
-
 
     FavoriteContextMenu {
         id: favoriteContextMenu
