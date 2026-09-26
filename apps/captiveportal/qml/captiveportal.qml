@@ -17,7 +17,7 @@ BrowserWindow {
     id: window
 
     //% "Captive portal"
-    activityDisabledByMdm: qsTrId("sailfish_captiveportal-la-captive_portal");
+    activityDisabledByMdm: qsTrId("sailfish_captiveportal-la-captive_portal")
     initialPage: Component {
         CaptivePortalPage {
             id: browserPage

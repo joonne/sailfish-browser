@@ -199,10 +199,8 @@ SilicaControl {
                         id: footerLoader
 
                         y: menuFlickable.height - height
-
                         width: menuFlickable.width
                         height: item ? item.height: 0
-
                         source: popUpMenu.footer
 
                         onInitializeItem: {

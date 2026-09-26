@@ -9,26 +9,26 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "bookmarkmanager.h"
+
 #include <QDebug>
 #include <QFile>
+#include <QPointer>
 #include <QTextStream>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QRegularExpression>
-#include <QStandardPaths>
 
 #include "bookmark.h"
 #include "browserpaths.h"
 
 BookmarkManager::BookmarkManager()
-  : QObject(nullptr)
+    : QObject(nullptr)
 {
 }
 
 BookmarkManager* BookmarkManager::instance()
 {
-    static QPointer <BookmarkManager> singleton;
+    static QPointer<BookmarkManager> singleton;
     if (singleton.isNull()) {
         singleton = new BookmarkManager();
     }
@@ -71,7 +71,8 @@ void BookmarkManager::clear()
     emit cleared();
 }
 
-QList<Bookmark*> BookmarkManager::load() {
+QList<Bookmark*> BookmarkManager::load()
+{
     QList<Bookmark*> bookmarks;
     QString bookmarkFile = BrowserPaths::dataLocation() + "/bookmarks.json";
     QScopedPointer<QFile> file(new QFile(bookmarkFile));
@@ -105,43 +106,6 @@ QList<Bookmark*> BookmarkManager::load() {
         qWarning() << "Bookmarks.json should be an array of items";
     }
     file->close();
-
-    // Cleanup after next stop release. See JB#53083 and JB#52736
-    bookmarkFile = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-            + QLatin1String("/org.sailfishos/sailfish-browser/bookmarks.json");
-    file.reset(new QFile(bookmarkFile));
-    if (file->exists() && file->open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QJsonDocument doc = QJsonDocument::fromJson(file->readAll());
-        if (doc.isArray()) {
-            QJsonArray array = doc.array();
-            for (const QJsonValue &value : array) {
-                if (value.isObject()) {
-                    QJsonObject obj = value.toObject();
-                    QString url = obj.value("url").toString();
-
-                    bool migrate = true;
-                    for (const Bookmark *bookmark : bookmarks) {
-                        if (bookmark->url() == url) {
-                            migrate = false;
-                            break;
-                        }
-                    }
-
-                    if (migrate) {
-                        Bookmark* m = new Bookmark(obj.value("title").toString(),
-                                                   url,
-                                                   obj.value("favicon").toString(),
-                                                   obj.value("hasTouchIcon").toBool());
-                        bookmarks.append(m);
-                    }
-                }
-            }
-        }
-        file->close();
-        file->remove();
-        save(bookmarks);
-    }
-    // End of stop release cleanup...
 
     return bookmarks;
 }

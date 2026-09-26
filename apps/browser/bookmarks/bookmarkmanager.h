@@ -14,7 +14,6 @@
 
 #include <QObject>
 #include <QList>
-#include <QPointer>
 
 class Bookmark;
 

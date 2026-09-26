@@ -15,16 +15,18 @@
 #include "faviconmanager.h"
 #include "logging.h"
 
-#include <webenginesettings.h>
 #include <qmozwindow.h>
 #include <qmozsecurity.h>
 
+#include <QBuffer>
 #include <QGuiApplication>
 #include <QtConcurrent>
 
 #define FULLSCREEN_MESSAGE "embed:fullscreenchanged"
 #define DOM_CONTENT_LOADED_MESSAGE "chrome:contentloaded"
+#define PAGE_METADATA_MESSAGE "embed:pageMetadata"
 #define CONTENT_ORIENTATION_CHANGED_MESSAGE "embed:contentOrientationChanged"
+#define VIEWPORT_FIT_MESSAGE "embed:viewportfit"
 #define LINK_SET_ICON "Link:SetIcon"
 #define LINK_ADD_FEED "Link:AddFeed"
 #define LINK_ADD_SEARCH "Link:AddSearch"
@@ -60,17 +62,27 @@ DeclarativeWebPage::DeclarativeWebPage(QObject *parent)
     , m_urlReady(false)
     , m_restoredCurrentLinkId(-1)
     , m_toolbarHeight(0.f)
+    , m_viewportFit(QStringLiteral("auto"))
+    , m_safeAreaInsetUsage(0)
 {
     // subscribe to gecko messages
     std::vector<std::string> messages = { FULLSCREEN_MESSAGE,
                                           DOM_CONTENT_LOADED_MESSAGE,
+                                          PAGE_METADATA_MESSAGE,
                                           LINK_SET_ICON,
                                           LINK_ADD_FEED,
                                           LINK_ADD_SEARCH,
                                           FIND_MESSAGE,
-                                          CONTENT_ORIENTATION_CHANGED_MESSAGE };
+                                          CONTENT_ORIENTATION_CHANGED_MESSAGE,
+                                          VIEWPORT_FIT_MESSAGE };
 
     addMessageListeners(messages);
+    const QString sharedPath = QStringLiteral("file:///usr/share/%1/shared")
+            .arg(BrowserAppInfo::captivePortal()
+                 ? QStringLiteral("sailfish-captiveportal")
+                 : QStringLiteral("sailfish-browser"));
+    loadFrameScript(sharedPath + QStringLiteral("/ViewportFit.js"));
+    loadFrameScript(sharedPath + QStringLiteral("/PageMetadata.js"));
 
     if (BrowserAppInfo::captivePortal()) {
         addMessageListener(OPEN_LINK);
@@ -96,6 +108,9 @@ DeclarativeWebPage::DeclarativeWebPage(QObject *parent)
     // When loading start reset state of chrome.
     connect(this, &QMozOpenGLWebPage::loadingChanged, [this]() {
         if (loading()) {
+            setViewportFit(QStringLiteral("auto"));
+            setSafeAreaInsetUsage(0);
+            setThemeColor(QColor(Qt::black));
             forceChrome(false);
             setChrome(true);
         }
@@ -273,6 +288,118 @@ void DeclarativeWebPage::setFixedToolbar(bool enable)
     }
 }
 
+int DeclarativeWebPage::safeAreaTop() const
+{
+    return m_safeAreaInsets.top();
+}
+
+void DeclarativeWebPage::setSafeAreaTop(int top)
+{
+    applySafeAreaInsets(QMargins(m_safeAreaInsets.left(), qMax(0, top),
+                                 m_safeAreaInsets.right(), m_safeAreaInsets.bottom()));
+}
+
+int DeclarativeWebPage::safeAreaRight() const
+{
+    return m_safeAreaInsets.right();
+}
+
+void DeclarativeWebPage::setSafeAreaRight(int right)
+{
+    applySafeAreaInsets(QMargins(m_safeAreaInsets.left(), m_safeAreaInsets.top(),
+                                 qMax(0, right), m_safeAreaInsets.bottom()));
+}
+
+int DeclarativeWebPage::safeAreaBottom() const
+{
+    return m_safeAreaInsets.bottom();
+}
+
+void DeclarativeWebPage::setSafeAreaBottom(int bottom)
+{
+    applySafeAreaInsets(QMargins(m_safeAreaInsets.left(), m_safeAreaInsets.top(),
+                                 m_safeAreaInsets.right(), qMax(0, bottom)));
+}
+
+int DeclarativeWebPage::safeAreaLeft() const
+{
+    return m_safeAreaInsets.left();
+}
+
+void DeclarativeWebPage::setSafeAreaLeft(int left)
+{
+    applySafeAreaInsets(QMargins(qMax(0, left), m_safeAreaInsets.top(),
+                                 m_safeAreaInsets.right(), m_safeAreaInsets.bottom()));
+}
+
+void DeclarativeWebPage::applySafeAreaInsets(const QMargins &insets)
+{
+    if (m_safeAreaInsets != insets) {
+        m_safeAreaInsets = insets;
+        setSafeAreaInsets(insets);
+        emit safeAreaInsetsChanged();
+    }
+}
+
+QString DeclarativeWebPage::viewportFit() const
+{
+    return m_viewportFit;
+}
+
+void DeclarativeWebPage::setViewportFit(const QString &viewportFit)
+{
+    QString normalized = viewportFit;
+    if (normalized != QLatin1String("cover") && normalized != QLatin1String("contain")) {
+        normalized = QStringLiteral("auto");
+    }
+
+    if (m_viewportFit != normalized) {
+        m_viewportFit = normalized;
+        qCDebug(lcCoreLog) << "WebPage: viewport fit:" << normalized;
+        emit viewportFitChanged();
+    }
+}
+
+int DeclarativeWebPage::safeAreaInsetUsage() const
+{
+    return m_safeAreaInsetUsage;
+}
+
+void DeclarativeWebPage::setSafeAreaInsetUsage(int usage)
+{
+    int normalized = usage & 0x0f;
+    if (m_safeAreaInsetUsage != normalized) {
+        m_safeAreaInsetUsage = normalized;
+        qCDebug(lcCoreLog) << "WebPage: safe area inset usage:" << normalized;
+        emit safeAreaInsetUsageChanged();
+    }
+}
+
+QColor DeclarativeWebPage::themeColor() const
+{
+    return m_themeColor;
+}
+
+bool DeclarativeWebPage::hasThemeColor() const
+{
+    return m_themeColor.isValid();
+}
+
+void DeclarativeWebPage::setThemeColor(const QColor &color)
+{
+    QColor normalized = color;
+    if (normalized.isValid()) {
+        normalized.setAlpha(255);
+    }
+
+    if (m_themeColor != normalized) {
+        m_themeColor = normalized;
+        qCDebug(lcCoreLog) << "WebPage: theme color:"
+                            << (normalized.isValid() ? normalized.name() : QStringLiteral("none"));
+        emit themeColorChanged();
+    }
+}
+
 void DeclarativeWebPage::updateChromeState()
 {
     if (m_forcedChrome || m_fixedToolbar) {
@@ -292,8 +419,32 @@ void DeclarativeWebPage::loadTab(const QString &newUrl, bool force, bool fromExt
     }
 }
 
+void DeclarativeWebPage::updateMetadataTitle(const QString &title)
+{
+    const QString currentUrl = url().toString();
+    const QString cleanedTitle = title.trimmed();
+    if (privateMode() || BrowserAppInfo::captivePortal() || !isUrlResolved()
+            || currentUrl.startsWith(QLatin1String("about:")) || cleanedTitle.isEmpty()) {
+        return;
+    }
+
+    DBManager::instance()->updateTitle(tabId(), currentUrl, cleanedTitle);
+}
+
 void DeclarativeWebPage::grabToFile(const QSize &size)
 {
+    if (m_container) {
+        m_grabResult.clear();
+        const QImage image = m_container->grabContentImage(size);
+        if (!image.isNull() && active()) {
+            m_grabWriter.setFuture(QtConcurrent::run(
+                    &DeclarativeWebPage::saveToFile,
+                    image,
+                    QStringLiteral("%1/tab-%2-thumb.jpg").arg(BrowserPaths::cacheLocation()).arg(tabId())));
+        }
+        return;
+    }
+
     // grabToImage handles invalid geometry.
     m_grabResult = grabToImage(size);
     if (m_grabResult && active()) {
@@ -310,6 +461,24 @@ void DeclarativeWebPage::grabToFile(const QSize &size)
 
 void DeclarativeWebPage::grabThumbnail(const QSize &size)
 {
+    if (m_container) {
+        m_thumbnailResult.clear();
+        const QImage image = m_container->grabContentImage(size);
+        if (!image.isNull() && active()) {
+            QByteArray iconData;
+            QBuffer buffer(&iconData);
+            buffer.open(QIODevice::WriteOnly);
+            if (image.save(&buffer, "jpg", 75)) {
+                buffer.close();
+                emit thumbnailResult(QStringLiteral("data:image/jpeg;base64,")
+                                     + QString::fromLatin1(iconData.toBase64()));
+            } else {
+                emit thumbnailResult(FaviconManager::defaultDesktopBookmarkIcon());
+            }
+        }
+        return;
+    }
+
     m_thumbnailResult = grabToImage(size);
     if (m_thumbnailResult && active()) {
         connect(m_thumbnailResult.data(), &QMozGrabResult::ready,
@@ -414,6 +583,17 @@ void DeclarativeWebPage::onRecvAsyncMessage(const QString& message, const QVaria
         QString docuri = data.toMap().value("docuri").toString();
         if (docuri.startsWith("about:neterror") && !docuri.contains("e=netOffline"))
             emit neterror();
+    } else if (message == QLatin1String(PAGE_METADATA_MESSAGE)) {
+        const QVariantMap metadata = data.toMap();
+        const QString metadataUrl = metadata.value(QStringLiteral("url")).toString();
+        if (metadataUrl.isEmpty() || metadataUrl == url().toString()) {
+            updateMetadataTitle(metadata.value(QStringLiteral("title")).toString());
+        }
+    } else if (message == QLatin1String(VIEWPORT_FIT_MESSAGE)) {
+        QVariantMap viewportFitInfo = data.toMap();
+        setViewportFit(viewportFitInfo.value(QStringLiteral("viewportFit")).toString());
+        setSafeAreaInsetUsage(viewportFitInfo.value(QStringLiteral("safeAreaInsetUsage")).toInt());
+        setThemeColor(QColor(viewportFitInfo.value(QStringLiteral("themeColor")).toString()));
     } else if (message == QLatin1String(CONTENT_ORIENTATION_CHANGED_MESSAGE)) {
         QString orientation = data.toMap().value(QStringLiteral("orientation")).toString();
         Qt::ScreenOrientation mappedOrientation = Qt::PortraitOrientation;

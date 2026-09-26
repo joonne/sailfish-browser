@@ -28,7 +28,10 @@
 #include <QScreen>
 #include <QMetaMethod>
 #include <QOpenGLFunctions_ES2>
+#include <QOpenGLFramebufferObject>
+#include <QOpenGLShaderProgram>
 #include <QGuiApplication>
+#include <QResizeEvent>
 #include <qmozwindow.h>
 #include <qmozsecurity.h>
 
@@ -40,6 +43,9 @@
 #include <QDBusConnection>
 #include <dsme/dsme_dbus_if.h>
 
+#include <EGL/egl.h>
+#include <GLES2/gl2ext.h>
+
 #ifndef DEBUG_LOGS
 #define DEBUG_LOGS 0
 #endif
@@ -48,6 +54,119 @@ static const bool gForceLandscapeToPortrait = !qgetenv("BROWSER_FORCE_LANDSCAPE_
 static const auto ABOUT_BLANK = QStringLiteral("about:blank");
 
 static DeclarativeWebContainer *s_instance = nullptr;
+
+static QColor opaqueSurfaceColor(const QColor &color)
+{
+    QColor normalized = color.isValid() ? color : QColor(Qt::black);
+    normalized.setAlpha(255);
+    return normalized;
+}
+
+static void setGLClearColor(QOpenGLFunctions_ES2 *functions, const QColor &color)
+{
+    const QColor normalized = opaqueSurfaceColor(color);
+    functions->glClearColor(normalized.redF(), normalized.greenF(),
+                            normalized.blueF(), 1.0f);
+}
+
+static void updateTextureCoordinates(Qt::ScreenOrientation orientation, GLfloat *coordinates)
+{
+    // WebRender renders into a GL framebuffer, whose EGLImage has a
+    // bottom-left texture origin. Qt's window coordinates are top-left based.
+    const GLfloat topLeft[] = { 0.0f, 1.0f };
+    const GLfloat bottomLeft[] = { 0.0f, 0.0f };
+    const GLfloat topRight[] = { 1.0f, 1.0f };
+    const GLfloat bottomRight[] = { 1.0f, 0.0f };
+
+    const int rotation = qApp->primaryScreen()->angleBetween(
+                orientation, qApp->primaryScreen()->primaryOrientation());
+    const GLfloat *corners[] = { topLeft, bottomLeft, topRight, bottomRight };
+
+    switch (rotation) {
+    case 90:
+        corners[0] = bottomLeft;
+        corners[1] = bottomRight;
+        corners[2] = topLeft;
+        corners[3] = topRight;
+        break;
+    case 180:
+        corners[0] = bottomRight;
+        corners[1] = topRight;
+        corners[2] = bottomLeft;
+        corners[3] = topLeft;
+        break;
+    case 270:
+        corners[0] = topRight;
+        corners[1] = topLeft;
+        corners[2] = bottomRight;
+        corners[3] = bottomLeft;
+        break;
+    default:
+        break;
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        coordinates[i * 2] = corners[i][0];
+        coordinates[i * 2 + 1] = corners[i][1];
+    }
+}
+
+static bool isLandscapeOrientation(Qt::ScreenOrientation orientation)
+{
+    return orientation == Qt::LandscapeOrientation
+            || orientation == Qt::InvertedLandscapeOrientation;
+}
+
+static QSizeF sizeForOrientation(const QSizeF &size, Qt::ScreenOrientation orientation)
+{
+    if (!size.isValid() || size.width() <= 0.0 || size.height() <= 0.0) {
+        return size;
+    }
+
+    const bool sizeLandscape = size.width() >= size.height();
+    if (sizeLandscape != isLandscapeOrientation(orientation)) {
+        return QSizeF(size.height(), size.width());
+    }
+
+    return size;
+}
+
+static void applyTextureRect(const QRectF &rect, GLfloat *coordinates)
+{
+    if (rect.left() <= 0.0 && rect.top() <= 0.0
+            && rect.width() >= 1.0 && rect.height() >= 1.0) {
+        return;
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        const GLfloat u = coordinates[i * 2];
+        const GLfloat v = coordinates[i * 2 + 1];
+        const GLfloat topOriginY = 1.0f - v;
+        coordinates[i * 2] = rect.left() + u * rect.width();
+        coordinates[i * 2 + 1] = 1.0f - (rect.top() + topOriginY * rect.height());
+    }
+}
+
+static QImage readCurrentFramebuffer(const QSize &size)
+{
+    while (glGetError()) {}
+
+    QImage image(size, QImage::Format_RGB32);
+    glReadPixels(0, 0, size.width(), size.height(), GL_BGRA_EXT,
+                 GL_UNSIGNED_BYTE, image.bits());
+    if (glGetError() == GL_NO_ERROR) {
+        return image.mirrored();
+    }
+
+    QImage rgbaImage(size, QImage::Format_RGBX8888);
+    glReadPixels(0, 0, size.width(), size.height(), GL_RGBA,
+                 GL_UNSIGNED_BYTE, rgbaImage.bits());
+    if (glGetError() == GL_NO_ERROR) {
+        return rgbaImage.mirrored();
+    }
+
+    return QImage();
+}
 
 DeclarativeWebContainer::DeclarativeWebContainer(QWindow *parent)
     : QWindow(parent)
@@ -127,10 +246,18 @@ DeclarativeWebContainer::~DeclarativeWebContainer()
     disconnect(&m_hiddenTabTimer, &QTimer::timeout,
                this, &DeclarativeWebContainer::restorePreviousTabDelayed);
 
-    QMutexLocker lock(&m_clearSurfaceTaskMutex);
-    if (m_clearSurfaceTask) {
-        SailfishOS::WebEngine *webEngine = SailfishOS::WebEngine::instance();
-        webEngine->CancelTask(m_clearSurfaceTask);
+    if (m_context) {
+        if (m_context->makeCurrent(this)) {
+            if (m_frameTexture) {
+                glDeleteTextures(1, &m_frameTexture);
+                m_frameTexture = 0;
+            }
+            delete m_textureProgram;
+            m_textureProgram = nullptr;
+            m_context->doneCurrent();
+        }
+        delete m_context;
+        m_context = nullptr;
     }
 }
 
@@ -153,6 +280,8 @@ QMozWindow *DeclarativeWebContainer::mozWindow() const
 void DeclarativeWebContainer::setWebPage(DeclarativeWebPage *webPage, bool triggerSignals)
 {
     if (m_webPage != webPage || triggerSignals) {
+        const bool activePageChanged = (m_webPage != webPage);
+
         // Disconnect previous page.
         if (m_webPage) {
             m_webPage->disconnect(this);
@@ -161,6 +290,20 @@ void DeclarativeWebContainer::setWebPage(DeclarativeWebPage *webPage, bool trigg
         m_webPage = webPage;
         // Mark as not rendered when ever tab is changed.
         setActiveTabRendered(false);
+        if (activePageChanged) {
+            const bool waitForActiveTabLoad = webPage != nullptr
+                    && (!webPage->loaded() || webPage->loading());
+            m_waitingForActiveTabFrame = webPage != nullptr;
+            m_waitingForActiveTabLoad = waitForActiveTabLoad;
+            m_waitingForActiveTabFirstPaint = webPage != nullptr
+                    && !webPage->isPainted();
+            m_activeTabCompositesToSkip = webPage
+                    && !m_waitingForActiveTabFirstPaint ? 1 : 0;
+            if (m_mozWindow) {
+                m_mozWindow->clearPlatformImage();
+            }
+            clearSurface();
+        }
 
         if (m_webPage) {
             connect(m_webPage.data(), &DeclarativeWebPage::canGoBackChanged,
@@ -190,13 +333,11 @@ void DeclarativeWebContainer::setWebPage(DeclarativeWebPage *webPage, bool trigg
             connect(m_webPage.data(), &DeclarativeWebPage::titleChanged,
                     m_model.data(), &DeclarativeTabModel::onTitleChanged, Qt::UniqueConnection);
 
-            // Wait for one frame to be rendered and schedule update if tab is ready to render.
-            connect(m_mozWindow.data(), &QMozWindow::compositingFinished,
-                    this, &DeclarativeWebContainer::updateActiveTabRendered, Qt::UniqueConnection);
+            // Track when the active tab is ready for thumbnail capture.
             connect(m_webPage.data(), &QMozOpenGLWebPage::domContentLoadedChanged,
                     this, &DeclarativeWebContainer::updateActiveTabRendered, Qt::UniqueConnection);
             connect(m_webPage.data(), &QMozOpenGLWebPage::firstPaint,
-                    this, &DeclarativeWebContainer::updateActiveTabRendered, Qt::UniqueConnection);
+                    this, &DeclarativeWebContainer::handleActiveTabFirstPaint, Qt::UniqueConnection);
 
             connect(m_webPage.data(), &DeclarativeWebPage::neterror, [this]() {
                 if (m_historyModel)
@@ -303,6 +444,7 @@ void DeclarativeWebContainer::setWebPageComponent(QQmlComponent *qmlComponent)
     if (m_webPageComponent.data() != qmlComponent) {
         m_webPageComponent = qmlComponent;
         emit webPageComponentChanged(qmlComponent);
+        initialize();
     }
 }
 
@@ -396,6 +538,52 @@ void DeclarativeWebContainer::setReadyToPaint(bool ready)
             emit readyToPaintChanged();
         }
     }
+}
+
+QRectF DeclarativeWebContainer::webContentRect() const
+{
+    return m_webContentRect;
+}
+
+void DeclarativeWebContainer::setWebContentRect(const QRectF &rect)
+{
+    if (m_webContentRect == rect) {
+        return;
+    }
+
+    m_webContentRect = rect;
+    updateMozWindowSize();
+
+    if (isExposed() && m_frameTexture) {
+        renderCompositedFrame();
+    }
+
+    emit webContentRectChanged();
+}
+
+QColor DeclarativeWebContainer::webContentBackgroundColor() const
+{
+    return m_webContentBackgroundColor;
+}
+
+void DeclarativeWebContainer::setWebContentBackgroundColor(const QColor &color)
+{
+    const QColor normalized = opaqueSurfaceColor(color);
+    if (m_webContentBackgroundColor == normalized) {
+        return;
+    }
+
+    m_webContentBackgroundColor = normalized;
+
+    if (isExposed()) {
+        if (m_frameTexture) {
+            renderCompositedFrame();
+        } else if (m_context) {
+            clearWindowSurface();
+        }
+    }
+
+    emit webContentBackgroundColorChanged();
 }
 
 Qt::ScreenOrientation DeclarativeWebContainer::pendingWebContentOrientation() const
@@ -574,6 +762,94 @@ bool DeclarativeWebContainer::activatePage(const Tab& tab, bool force, bool from
     return false;
 }
 
+QImage DeclarativeWebContainer::grabContentImage(const QSize &size)
+{
+    if (!isExposed() || !m_mozWindow || !m_webPage || !m_webPage->active()) {
+        return QImage();
+    }
+
+    const QSize targetSize = size.isEmpty() ? webContentSize() : size;
+    if (!targetSize.isValid() || targetSize.width() <= 0 || targetSize.height() <= 0) {
+        qWarning() << "Cannot grab browser WebRender frame with invalid size" << targetSize;
+        return QImage();
+    }
+
+    if (!ensureRenderContext() || !ensureTextureProgram()) {
+        return QImage();
+    }
+
+    QSize textureSize;
+    if (!bindWebRenderFrameTexture(&textureSize)) {
+        qWarning() << "No WebRender EGLImage available for browser frame grab";
+        return QImage();
+    }
+
+    QOpenGLFramebufferObject frameBuffer(targetSize);
+    if (!frameBuffer.isValid() || !frameBuffer.bind()) {
+        qWarning() << "Failed to create browser WebRender frame grab buffer" << targetSize;
+        return QImage();
+    }
+
+    glViewport(0, 0, targetSize.width(), targetSize.height());
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    const QColor clearColor = opaqueSurfaceColor(m_webContentBackgroundColor);
+    glClearColor(clearColor.redF(), clearColor.greenF(), clearColor.blueF(), 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    const Qt::ScreenOrientation contentOrientation = m_mozWindow->contentOrientation();
+    const QRectF contentRect = m_webPage->contentRect();
+    const qreal contentResolution = m_webPage->resolution();
+    const qreal toolbarHeight = qMax(m_webPage->toolbarHeight(),
+                                     static_cast<qreal>(m_webPage->dynamicToolbarHeight()));
+    QSizeF drawSize = contentResolution > 0.0
+            ? contentRect.size() * contentResolution
+            : QSizeF();
+    if (toolbarHeight > 0.0 && drawSize.height() > toolbarHeight) {
+        drawSize.setHeight(drawSize.height() - toolbarHeight);
+    }
+    if (!drawSize.isValid() || drawSize.width() <= 0.0 || drawSize.height() <= 0.0) {
+        drawSize = sizeForOrientation(m_mozWindow->size(), contentOrientation);
+    }
+    if (!drawSize.isValid() || drawSize.width() <= 0.0 || drawSize.height() <= 0.0) {
+        drawSize = sizeForOrientation(webContentSize(), contentOrientation);
+    }
+    if (!drawSize.isValid() || drawSize.width() <= 0.0 || drawSize.height() <= 0.0) {
+        drawSize = sizeForOrientation(textureSize, contentOrientation);
+    }
+    if (!drawSize.isValid() || drawSize.width() <= 0.0 || drawSize.height() <= 0.0) {
+        drawSize = targetSize;
+    }
+    const QSizeF sourceSize = drawSize;
+    drawSize.scale(targetSize, Qt::KeepAspectRatioByExpanding);
+    const Qt::ScreenOrientation grabOrientation = qApp->primaryScreen()
+            ? qApp->primaryScreen()->primaryOrientation()
+            : contentOrientation;
+
+    QRectF textureRect(0.0, 0.0, 1.0, 1.0);
+    if (textureSize.width() > 0 && textureSize.height() > 0) {
+        textureRect.setWidth(qBound<qreal>(0.0, sourceSize.width() / textureSize.width(), 1.0));
+        textureRect.setHeight(qBound<qreal>(0.0, sourceSize.height() / textureSize.height(), 1.0));
+    }
+
+    const QRectF targetRect(0.0, 0.0, drawSize.width(), drawSize.height());
+    QImage image;
+    if (drawWebRenderFrame(targetRect, QSizeF(targetSize), grabOrientation,
+                           textureRect)) {
+        image = readCurrentFramebuffer(targetSize);
+    } else {
+        qWarning() << "Browser WebRender frame grab draw failed"
+                   << "textureSize" << textureSize << "targetSize" << targetSize;
+    }
+
+    frameBuffer.release();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    return image;
+}
+
 int DeclarativeWebContainer::tabId(uint32_t uniqueId) const
 {
     if (m_webPages) {
@@ -621,34 +897,6 @@ void DeclarativeWebContainer::setActiveTabRendered(bool rendered)
     emit activeTabRenderedChanged();
 }
 
-bool DeclarativeWebContainer::postClearWindowSurfaceTask()
-{
-    QMutexLocker lock(&m_clearSurfaceTaskMutex);
-    if (m_clearSurfaceTask) {
-        return true;
-    }
-    SailfishOS::WebEngine *webEngine = SailfishOS::WebEngine::instance();
-    m_clearSurfaceTask = webEngine->PostCompositorTask(
-        &DeclarativeWebContainer::clearWindowSurfaceTask, this);
-    return m_clearSurfaceTask != 0;
-}
-
-void DeclarativeWebContainer::clearWindowSurfaceTask(void *data)
-{
-    // Called from compositor thread.
-    DeclarativeWebContainer* that = static_cast<DeclarativeWebContainer*>(data);
-    QMutexLocker taskLock(&that->m_clearSurfaceTaskMutex);
-
-    // When executing clear window surface task, GL context might not yet
-    // be created. Time window is between first postClearWindowTask call and
-    // createGLContext (requestGLContext signal).
-    QMutexLocker contextLock(&that->m_contextMutex);
-    if (that->m_context) {
-        that->clearWindowSurface();
-        that->m_clearSurfaceTask = 0;
-    }
-}
-
 void DeclarativeWebContainer::clearWindowSurface()
 {
     Q_ASSERT(m_context);
@@ -658,9 +906,160 @@ void DeclarativeWebContainer::clearWindowSurface()
     QOpenGLFunctions_ES2* funcs = m_context->versionFunctions<QOpenGLFunctions_ES2>();
     Q_ASSERT(funcs);
 
-    funcs->glClearColor(1.0, 1.0, 1.0, 0.0);
+    setGLClearColor(funcs, m_webContentBackgroundColor);
     funcs->glClear(GL_COLOR_BUFFER_BIT);
     m_context->swapBuffers(this);
+}
+
+bool DeclarativeWebContainer::ensureRenderContext()
+{
+    if (m_context) {
+        return m_context->makeCurrent(this);
+    }
+
+    QOpenGLContext *context = new QOpenGLContext;
+    context->setFormat(requestedFormat());
+    if (!context->create()) {
+        qWarning() << "Failed to create browser WebRender presentation context";
+        delete context;
+        return false;
+    }
+
+    if (!context->makeCurrent(this)) {
+        qWarning() << "Failed to make browser WebRender presentation context current";
+        delete context;
+        return false;
+    }
+
+    m_context = context;
+    initializeOpenGLFunctions();
+    return true;
+}
+
+bool DeclarativeWebContainer::ensureTextureProgram()
+{
+    if (m_textureProgram) {
+        return true;
+    }
+
+    QOpenGLShaderProgram *program = new QOpenGLShaderProgram;
+    static const char *vertexShader =
+            "attribute highp vec2 aVertex;\n"
+            "attribute highp vec2 aTexCoord;\n"
+            "varying highp vec2 vTexCoord;\n"
+            "void main() {\n"
+            "    gl_Position = vec4(aVertex, 0.0, 1.0);\n"
+            "    vTexCoord = aTexCoord;\n"
+            "}\n";
+    static const char *fragmentShader =
+            "#extension GL_OES_EGL_image_external : require\n"
+            "uniform lowp samplerExternalOES texture;\n"
+            "varying highp vec2 vTexCoord;\n"
+            "void main() {\n"
+            "    gl_FragColor = texture2D(texture, vTexCoord);\n"
+            "}\n";
+
+    if (!program->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShader)
+            || !program->addShaderFromSourceCode(QOpenGLShader::Fragment, fragmentShader)
+            || !program->link()) {
+        qWarning() << "Failed to build browser WebRender texture shader"
+                   << program->log();
+        delete program;
+        return false;
+    }
+
+    m_textureProgram = program;
+    return true;
+}
+
+bool DeclarativeWebContainer::bindWebRenderFrameTexture(QSize *textureSize)
+{
+    static const PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES =
+            reinterpret_cast<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(
+                eglGetProcAddress("glEGLImageTargetTexture2DOES"));
+    if (!glEGLImageTargetTexture2DOES) {
+        qWarning() << "glEGLImageTargetTexture2DOES unavailable";
+        return false;
+    }
+
+    bool hasImage = false;
+
+    m_mozWindow->getPlatformImage([&](void *platformImage, int width, int height) {
+        if (!platformImage || width <= 0 || height <= 0) {
+            return;
+        }
+
+        if (m_frameTexture == 0) {
+            glGenTextures(1, &m_frameTexture);
+        }
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, m_frameTexture);
+        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES,
+                                     static_cast<GLeglImageOES>(platformImage));
+
+        const GLenum error = glGetError();
+        if (error != GL_NO_ERROR) {
+            qWarning() << "Failed to bind browser WebRender EGLImage"
+                       << QString::number(error, 16)
+                       << "image" << platformImage << "size" << width << height;
+            return;
+        }
+
+        hasImage = true;
+        if (textureSize) {
+            *textureSize = QSize(width, height);
+        }
+    });
+
+    return hasImage && m_frameTexture != 0;
+}
+
+bool DeclarativeWebContainer::drawWebRenderFrame(const QRectF &targetRect,
+                                                 const QSizeF &surfaceSize,
+                                                 Qt::ScreenOrientation orientation,
+                                                 const QRectF &textureRect)
+{
+    if (surfaceSize.width() <= 0.0 || surfaceSize.height() <= 0.0) {
+        return false;
+    }
+
+    const GLfloat left = 2.0f * targetRect.left() / surfaceSize.width() - 1.0f;
+    const GLfloat right = 2.0f * targetRect.right() / surfaceSize.width() - 1.0f;
+    const GLfloat top = 1.0f - 2.0f * targetRect.top() / surfaceSize.height();
+    const GLfloat bottom = 1.0f - 2.0f * targetRect.bottom() / surfaceSize.height();
+    const GLfloat vertices[] = {
+        left, top,
+        left, bottom,
+        right, top,
+        right, bottom
+    };
+    GLfloat texCoords[8];
+    updateTextureCoordinates(orientation, texCoords);
+    applyTextureRect(textureRect, texCoords);
+
+    m_textureProgram->bind();
+    m_textureProgram->setUniformValue("texture", 0);
+    const int vertexAttribute = m_textureProgram->attributeLocation("aVertex");
+    const int texCoordAttribute = m_textureProgram->attributeLocation("aTexCoord");
+    m_textureProgram->enableAttributeArray(vertexAttribute);
+    m_textureProgram->enableAttributeArray(texCoordAttribute);
+    m_textureProgram->setAttributeArray(vertexAttribute, GL_FLOAT, vertices, 2);
+    m_textureProgram->setAttributeArray(texCoordAttribute, GL_FLOAT, texCoords, 2);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, m_frameTexture);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+    m_textureProgram->disableAttributeArray(vertexAttribute);
+    m_textureProgram->disableAttributeArray(texCoordAttribute);
+    m_textureProgram->release();
+
+    return glGetError() == GL_NO_ERROR;
 }
 
 void DeclarativeWebContainer::dumpPages() const
@@ -774,11 +1173,6 @@ void DeclarativeWebContainer::exposeEvent(QExposeEvent*)
         if (m_webPage && !m_closing) {
             m_webPage->update();
         } else {
-            if (postClearWindowSurfaceTask()) {
-                alreadyExposed = true;
-                return;
-            }
-
             // The compositor thread has not been created on gecko side, yet.
             // We can use temporary GL context to clear the contents of the
             // surface.
@@ -797,6 +1191,21 @@ void DeclarativeWebContainer::exposeEvent(QExposeEvent*)
         }
     }
     alreadyExposed = isExposed();
+
+    if (isExposed() && m_frameTexture) {
+        renderCompositedFrame();
+    }
+}
+
+void DeclarativeWebContainer::resizeEvent(QResizeEvent *event)
+{
+    if (!event->size().isEmpty()) {
+        updateMozWindowSize();
+    }
+    if (isExposed() && m_frameTexture) {
+        renderCompositedFrame();
+    }
+    QWindow::resizeEvent(event);
 }
 
 void DeclarativeWebContainer::touchEvent(QTouchEvent *event)
@@ -809,9 +1218,18 @@ void DeclarativeWebContainer::touchEvent(QTouchEvent *event)
     if (m_webPage && m_enabled && (!m_touchBlocked || event->type() != QEvent::TouchBegin)) {
         QList<QTouchEvent::TouchPoint> touchPoints = event->touchPoints();
         QTouchEvent mappedTouchEvent = *event;
+        const QPointF windowOffset(position());
+        const QRectF contentRect = effectiveWebContentRect();
+        const QPointF topLeft = m_rotationHandler->mapFromScene(windowOffset + contentRect.topLeft());
+        const QPointF topRight = m_rotationHandler->mapFromScene(windowOffset + contentRect.topRight());
+        const QPointF bottomLeft = m_rotationHandler->mapFromScene(windowOffset + contentRect.bottomLeft());
+        const QPointF bottomRight = m_rotationHandler->mapFromScene(windowOffset + contentRect.bottomRight());
+        const QPointF contentOrigin(qMin(qMin(topLeft.x(), topRight.x()), qMin(bottomLeft.x(), bottomRight.x())),
+                                    qMin(qMin(topLeft.y(), topRight.y()), qMin(bottomLeft.y(), bottomRight.y())));
 
         for (int i = 0; i < touchPoints.count(); ++i) {
-            QPointF pt = m_rotationHandler->mapFromScene(touchPoints.at(i).pos());
+            QPointF pt = m_rotationHandler->mapFromScene(touchPoints.at(i).pos() + windowOffset);
+            pt -= contentOrigin;
             touchPoints[i].setPos(pt);
         }
 
@@ -921,7 +1339,28 @@ void DeclarativeWebContainer::updateContentOrientation(Qt::ScreenOrientation ori
 
 void DeclarativeWebContainer::clearSurface()
 {
-    postClearWindowSurfaceTask();
+    if (!isExposed()) {
+        return;
+    }
+
+    QMutexLocker lock(&m_contextMutex);
+    if (m_context) {
+        clearWindowSurface();
+        return;
+    }
+
+    QOpenGLContext context;
+    context.setFormat(requestedFormat());
+    if (!context.create()) {
+        qWarning() << "Failed to create browser surface clear context";
+        return;
+    }
+
+    m_context = &context;
+    clearWindowSurface();
+    m_context = nullptr;
+
+    context.doneCurrent();
 }
 
 qreal DeclarativeWebContainer::contentHeight() const
@@ -930,6 +1369,33 @@ qreal DeclarativeWebContainer::contentHeight() const
         return m_webPage->contentHeight();
     } else {
         return 0.0;
+    }
+}
+
+QRectF DeclarativeWebContainer::effectiveWebContentRect() const
+{
+    const QRectF windowRect(QPointF(0, 0), QSizeF(width(), height()));
+    QRectF rect = m_webContentRect.isNull() ? windowRect : m_webContentRect;
+
+    rect = rect.intersected(windowRect);
+    if (rect.width() <= 0 || rect.height() <= 0) {
+        return windowRect;
+    }
+
+    return rect;
+}
+
+QSize DeclarativeWebContainer::webContentSize() const
+{
+    const QRectF rect = effectiveWebContentRect();
+    return QSize(qMax(1, qRound(rect.width())),
+                 qMax(1, qRound(rect.height())));
+}
+
+void DeclarativeWebContainer::updateMozWindowSize()
+{
+    if (m_mozWindow) {
+        m_mozWindow->setSize(webContentSize());
     }
 }
 
@@ -971,15 +1437,13 @@ void DeclarativeWebContainer::initialize()
     }
 
     if (SailfishOS::WebEngine::instance()->isInitialized() && !m_mozWindow) {
-        m_mozWindow = new QMozWindow(QWindow::size());
+        m_mozWindow = new QMozWindow(webContentSize());
         m_mozWindow->setPrimaryOrientation(screen()->primaryOrientation());
 
-        connect(m_mozWindow.data(), &QMozWindow::requestGLContext,
-                this, &DeclarativeWebContainer::createGLContext, Qt::DirectConnection);
         connect(m_mozWindow.data(), &QMozWindow::orientationChangeFiltered,
                 this, &DeclarativeWebContainer::handleContentOrientationChanged);
-        connect(m_mozWindow.data(), &QMozWindow::compositorCreated,
-                this, &DeclarativeWebContainer::postClearWindowSurfaceTask);
+        connect(m_mozWindow.data(), &QMozWindow::compositingFinished,
+                this, &DeclarativeWebContainer::handleCompositingFinished, Qt::QueuedConnection);
         m_mozWindow->reserve();
         m_mozWindow->setReadyToPaint(false);
         if (m_chromeWindow) {
@@ -990,6 +1454,12 @@ void DeclarativeWebContainer::initialize()
     // This signal handler is responsible for activating
     // the first page.
     if (!canInitialize() || m_initialized) {
+        return;
+    }
+
+    // Page activation needs this QML component. It can arrive after the
+    // engine/model/expose signals that normally trigger initialization.
+    if (!m_webPageComponent) {
         return;
     }
 
@@ -1069,7 +1539,6 @@ void DeclarativeWebContainer::releasePage(int tabId)
         // Successfully destroyed. Emit relevant property changes.
         if (m_model->count() == 0) {
             setWebPage(nullptr, true);
-            postClearWindowSurfaceTask();
         }
     }
 }
@@ -1103,21 +1572,39 @@ void DeclarativeWebContainer::updateLoading()
 {
     if (m_webPage && m_webPage->loading()) {
         setLoadProgress(0);
+        if (m_waitingForActiveTabFrame) {
+            m_waitingForActiveTabLoad = true;
+            m_waitingForActiveTabFirstPaint = true;
+            m_activeTabCompositesToSkip = 0;
+            clearSurface();
+        }
     }
 
     emit loadingChanged();
 }
 
+void DeclarativeWebContainer::handleActiveTabFirstPaint(int offx, int offy)
+{
+    if (sender() == m_webPage && offx >= 0 && offy >= 0) {
+        // Some pages keep the top-level load open after useful content is
+        // already painted. First paint is enough to release the cleared tab
+        // surface; keep skipping one composite to avoid stale buffer reuse.
+        m_waitingForActiveTabLoad = false;
+        m_waitingForActiveTabFirstPaint = false;
+        m_activeTabCompositesToSkip = qMax(m_activeTabCompositesToSkip, 1);
+    }
+
+    updateActiveTabRendered();
+}
+
 void DeclarativeWebContainer::updateActiveTabRendered()
 {
-    if (!m_webPage || !m_webPage->completed() || (!m_webPage->domContentLoaded() && !m_webPage->isPainted())) {
+    if (m_activeTabRendered || m_waitingForActiveTabFrame || !m_webPage || !m_webPage->completed()
+            || (!m_webPage->domContentLoaded() && !m_webPage->isPainted())) {
         return;
     }
 
     setActiveTabRendered(true);
-    // One frame rendered so let's disconnect.
-    disconnect(m_mozWindow.data(), &QMozWindow::compositingFinished,
-               this, &DeclarativeWebContainer::updateActiveTabRendered);
 }
 
 void DeclarativeWebContainer::onLastViewDestroyed()
@@ -1175,21 +1662,79 @@ void DeclarativeWebContainer::loadTab(const Tab& tab, bool force, bool fromExter
     }
 }
 
-void DeclarativeWebContainer::createGLContext()
+void DeclarativeWebContainer::handleCompositingFinished()
 {
-    QMutexLocker lock(&m_contextMutex);
-    if (!m_context) {
-        m_context = new QOpenGLContext();
-        m_context->setFormat(requestedFormat());
-        m_context->create();
-        m_context->makeCurrent(this);
-        initializeOpenGLFunctions();
-    } else {
-        m_context->makeCurrent(this);
+    renderCompositedFrame();
+    updateActiveTabRendered();
+}
+
+void DeclarativeWebContainer::renderCompositedFrame()
+{
+    if (!isExposed() || !m_mozWindow) {
+        return;
     }
 
-    if (!m_activeTabRendered) {
-        clearWindowSurface();
+    if (m_waitingForActiveTabFrame) {
+        // Do not redraw the previous tab's cached WebRender image after a tab
+        // switch or before a switched-to loading tab has produced real paint.
+        if (m_webPage && m_waitingForActiveTabLoad && m_webPage->loaded()) {
+            m_waitingForActiveTabLoad = false;
+            m_activeTabCompositesToSkip = qMax(m_activeTabCompositesToSkip, 1);
+        }
+
+        if (!m_webPage || m_waitingForActiveTabFirstPaint) {
+            clearSurface();
+            return;
+        }
+        if (m_activeTabCompositesToSkip > 0) {
+            --m_activeTabCompositesToSkip;
+            clearSurface();
+            return;
+        }
+    }
+
+    if (!m_webPage) {
+        return;
+    }
+
+    const bool completingActiveTabFrame = m_waitingForActiveTabFrame;
+
+    if (!ensureRenderContext() || !ensureTextureProgram()) {
+        return;
+    }
+
+    QSize textureSize;
+    if (!bindWebRenderFrameTexture(&textureSize)) {
+        static int noImageWarnings = 0;
+        if (++noImageWarnings <= 5) {
+            qWarning() << "No WebRender EGLImage available for browser frame";
+        }
+        return;
+    }
+
+    const qreal ratio = devicePixelRatio();
+    glViewport(0, 0, qRound(width() * ratio), qRound(height() * ratio));
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_SCISSOR_TEST);
+    const QColor clearColor = opaqueSurfaceColor(m_webContentBackgroundColor);
+    glClearColor(clearColor.redF(), clearColor.greenF(), clearColor.blueF(), 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    if (!drawWebRenderFrame(effectiveWebContentRect(), QSizeF(width(), height()),
+                            m_mozWindow->contentOrientation())) {
+        qWarning() << "Browser WebRender frame draw failed"
+                   << "textureSize" << textureSize << "windowSize" << size();
+        return;
+    }
+
+    m_context->swapBuffers(this);
+
+    if (completingActiveTabFrame) {
+        m_waitingForActiveTabFrame = false;
+        m_waitingForActiveTabLoad = false;
+        m_waitingForActiveTabFirstPaint = false;
     }
 }
 
@@ -1197,6 +1742,7 @@ void DeclarativeWebContainer::handleContentOrientationChanged(Qt::ScreenOrientat
 {
     if (orientation == pendingWebContentOrientation()) {
         emit webContentOrientationChanged(orientation);
+        renderCompositedFrame();
     }
 }
 

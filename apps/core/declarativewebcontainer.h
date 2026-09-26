@@ -10,19 +10,23 @@
 #ifndef DECLARATIVEWEBCONTAINER_H
 #define DECLARATIVEWEBCONTAINER_H
 
-#include <qmozcontext.h>
 #include <qmozsecurity.h>
 
 #include <QtGui/QWindow>
 #include <QtGui/QOpenGLFunctions>
+#include <QtGui/qopengl.h>
+#include <QColor>
+#include <QImage>
 #include <QPointer>
 #include <QQmlComponent>
 #include <QQuickView>
 #include <QQuickItem>
 #include <QMutex>
+#include <QRectF>
 #include <QTimer>
 
 class QMozWindow;
+class QOpenGLShaderProgram;
 class QTimerEvent;
 class DeclarativeTabModel;
 class DeclarativeWebPage;
@@ -65,6 +69,8 @@ class DeclarativeWebContainer : public QWindow, public QQmlParserStatus, protect
     Q_PROPERTY(QQmlComponent* webPageComponent READ webPageComponent WRITE setWebPageComponent NOTIFY webPageComponentChanged FINAL)
     Q_PROPERTY(QObject *chromeWindow READ chromeWindow WRITE setChromeWindow NOTIFY chromeWindowChanged FINAL)
     Q_PROPERTY(bool readyToPaint READ readyToPaint WRITE setReadyToPaint NOTIFY readyToPaintChanged FINAL)
+    Q_PROPERTY(QRectF webContentRect READ webContentRect WRITE setWebContentRect NOTIFY webContentRectChanged FINAL)
+    Q_PROPERTY(QColor webContentBackgroundColor READ webContentBackgroundColor WRITE setWebContentBackgroundColor NOTIFY webContentBackgroundColorChanged FINAL)
 
     Q_PROPERTY(Qt::ScreenOrientation pendingWebContentOrientation READ pendingWebContentOrientation NOTIFY pendingWebContentOrientationChanged FINAL)
 
@@ -116,6 +122,11 @@ public:
     bool readyToPaint() const;
     void setReadyToPaint(bool ready);
 
+    QRectF webContentRect() const;
+    void setWebContentRect(const QRectF &rect);
+    QColor webContentBackgroundColor() const;
+    void setWebContentBackgroundColor(const QColor &color);
+
     Qt::ScreenOrientation pendingWebContentOrientation() const;
 
     QMozSecurity *security() const;
@@ -127,6 +138,7 @@ public:
 
     bool isActiveTab(int tabId);
     bool activatePage(const Tab& tab, bool force = false, bool fromExternal = false);
+    QImage grabContentImage(const QSize &size);
     int tabId(uint32_t uniqueId) const;
     int previouslyUsedTabId() const;
     // For D-Bus interfaces
@@ -182,6 +194,8 @@ signals:
     void chromeWindowChanged();
     void chromeExposed();
     void readyToPaintChanged();
+    void webContentRectChanged();
+    void webContentBackgroundColorChanged();
 
     void pendingWebContentOrientationChanged();
     void webContentOrientationChanged(Qt::ScreenOrientation orientation);
@@ -200,6 +214,7 @@ signals:
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
     void exposeEvent(QExposeEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
     void touchEvent(QTouchEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
@@ -225,6 +240,7 @@ private slots:
     void closeWindow();
     void updateLoadProgress();
     void updateLoading();
+    void handleActiveTabFirstPaint(int offx, int offy);
     void updateActiveTabRendered();
     void onLastViewDestroyed();
 
@@ -232,13 +248,10 @@ private slots:
     void updateWindowFlags();
 
     // QMozWindow related slots:
-    void createGLContext();
+    void handleCompositingFinished();
+    void renderCompositedFrame();
 
     void handleContentOrientationChanged(Qt::ScreenOrientation orientation);
-    // Clears window surface on the compositor thread. Can be called even when there are
-    // no active views. In case this function is called too early during gecko initialization,
-    // before compositor thread has actually been started the function returns false.
-    bool postClearWindowSurfaceTask();
 
     // Restore the previous tab when a hidden tab is opened
     void restorePreviousTab();
@@ -248,6 +261,9 @@ private:
     void setWebPage(DeclarativeWebPage *webPage, bool triggerSignals = false);
     void setTabModel(DeclarativeTabModel *model);
     qreal contentHeight() const;
+    QRectF effectiveWebContentRect() const;
+    QSize webContentSize() const;
+    void updateMozWindowSize();
     bool canInitialize() const;
     void loadTab(const Tab& tab, bool force, bool fromExternal);
     void updateMode();
@@ -255,8 +271,13 @@ private:
     bool browserEnabled() const;
 
     void destroyWindow();
-    static void clearWindowSurfaceTask(void* data);
     void clearWindowSurface();
+    bool ensureRenderContext();
+    bool ensureTextureProgram();
+    bool bindWebRenderFrameTexture(QSize *textureSize);
+    bool drawWebRenderFrame(const QRectF &targetRect, const QSizeF &surfaceSize,
+                            Qt::ScreenOrientation orientation,
+                            const QRectF &textureRect = QRectF(0.0, 0.0, 1.0, 1.0));
 
     QPointer<QMozWindow> m_mozWindow;
     QPointer<QQuickItem> m_rotationHandler;
@@ -264,6 +285,8 @@ private:
     QPointer<QQuickView> m_chromeWindow;
     QOpenGLContext *m_context = nullptr;
     QMutex m_contextMutex;
+    QOpenGLShaderProgram *m_textureProgram = nullptr;
+    GLuint m_frameTexture = 0;
 
     QPointer<DeclarativeTabModel> m_model;
     QPointer<QQmlComponent> m_webPageComponent;
@@ -274,6 +297,8 @@ private:
     bool m_enabled = true;
     bool m_foreground = true;
     bool m_touchBlocked = false;
+    QRectF m_webContentRect;
+    QColor m_webContentBackgroundColor = QColor(Qt::black);
 
     // See DeclarativeWebContainer::load (line 283) as load need to "work" even if engine, model,
     // or qml component is not yet completed (completed property is still false). So cache url/title for later use.
@@ -291,9 +316,10 @@ private:
 
     bool m_privateMode = false;
     bool m_activeTabRendered = false;
-
-    QMutex m_clearSurfaceTaskMutex;
-    QMozContext::TaskHandle m_clearSurfaceTask = nullptr;
+    bool m_waitingForActiveTabFrame = false;
+    bool m_waitingForActiveTabLoad = false;
+    bool m_waitingForActiveTabFirstPaint = false;
+    int m_activeTabCompositesToSkip = 0;
 
     bool m_closing = false;
 
