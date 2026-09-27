@@ -32,7 +32,7 @@
 #include <qmozwindow.h>
 #include <qmozsecurity.h>
 
-#include "mdconfitemcompat.h"
+#include <MDConfItem>
 
 #include <qpa/qplatformnativeinterface.h>
 #include <libsailfishpolicy/policyvalue.h>

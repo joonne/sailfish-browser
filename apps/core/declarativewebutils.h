@@ -17,7 +17,7 @@
 #include <QUrl>
 #include <QColor>
 #include <QVariant>
-#include "mdconfitemcompat.h"
+class MDConfItem;
 
 class DeclarativeWebUtils : public QObject
 {
