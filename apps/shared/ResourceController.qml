@@ -17,6 +17,7 @@ import Sailfish.WebEngine 1.0
 import Nemo.DBus 2.0
 import Nemo.Policy 1.0
 import Nemo.Connectivity 1.0
+import Amber.Mpris 1.0
 
 // QtObject cannot have children
 Item {
@@ -39,7 +40,7 @@ Item {
 
     // MPRIS integration: update playback state and handle commands
     Connections {
-        target: (webApp && MprisPlayer) ? MprisPlayer : null
+        target: (webApp && WebAppMpris) ? WebAppMpris : null
 
         onPlayRequested: {
             if (webPage) {
@@ -67,6 +68,12 @@ Item {
                 webPage.sendAsyncMessage("embedui:media-control", {"action": "previoustrack"})
             }
         }
+    }
+
+    function _setMprisMetadata(title, artist, artUrl) {
+        WebAppMpris.metaData.title = title
+        WebAppMpris.metaData.contributingArtist = artist
+        WebAppMpris.metaData.artUrl = artUrl
     }
 
     function calculateStatus() {
@@ -122,13 +129,9 @@ Item {
         target: (webApp && webPage) ? webPage : null
 
         onRecvAsyncMessage: {
-            if (message === "embed:media-session-metadata" && MprisPlayer) {
+            if (message === "embed:media-session-metadata" && WebAppMpris) {
                 var meta = data
-                MprisPlayer.setMetadata(
-                    meta.title || "",
-                    meta.artist || "",
-                    meta.artwork || ""
-                )
+                _setMprisMetadata(meta.title || "", meta.artist || "", meta.artwork || "")
                 _hasMediaSessionMetadata = true
             }
         }
@@ -152,14 +155,16 @@ Item {
                     _mediaState = data.state
                     _lastStateOwner = data.owner
                     // Update MPRIS playback state
-                    if (webApp && MprisPlayer) {
-                        MprisPlayer.setPlaybackState(data.state)
+                    if (webApp && WebAppMpris) {
+                        WebAppMpris.playbackStatus = data.state === "play" ? Mpris.Playing
+                                                   : data.state === "pause" ? Mpris.Paused
+                                                   : Mpris.Stopped
                         if (data.state === "play") {
-                            MprisPlayer.setCanGoNext(true)
-                            MprisPlayer.setCanGoPrevious(true)
+                            WebAppMpris.canGoNext = true
+                            WebAppMpris.canGoPrevious = true
                             // Set page title as fallback metadata if no MediaSession metadata
                             if (!_hasMediaSessionMetadata) {
-                                MprisPlayer.setMetadata(pageTitle, "", "")
+                                _setMprisMetadata(pageTitle, "", "")
                             }
                         }
                     }
