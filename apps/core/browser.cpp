@@ -16,8 +16,8 @@
 #include "downloadmanager.h"
 #include "settingmanager.h"
 #include "browserappinfo.h"
-#include "mprisplayer.h"
 
+#include <AmberMpris/mprisplayer.h>
 #include <QDir>
 #include <QGuiApplication>
 #include <QQmlContext>
@@ -32,6 +32,14 @@ const auto MOZILLA_DATA_UA_UPDATE = QStringLiteral("ua-update.json");
 const auto MOZILLA_DATA_UA_UPDATE_SOURCE = QStringLiteral("/usr/share/sailfish-browser/data/ua-update.json.in");
 const auto MOZILLA_DATA_PREFS = QStringLiteral("prefs.js");
 const auto MOZILLA_DATA_PREFS_SOURCE = QStringLiteral("/usr/share/sailfish-browser/data/prefs.js");
+
+static QString webAppIdentity(const QUrl &url)
+{
+    QString host = url.host();
+    if (host.startsWith(QStringLiteral("www.")))
+        host = host.mid(4);
+    return host.isEmpty() ? QStringLiteral("Sailfish Browser") : host;
+}
 
 BrowserPrivate::BrowserPrivate(QQuickView *view)
     : view(view)
@@ -90,10 +98,16 @@ Browser::Browser(QQuickView *view, const QString &dataPath, QObject *parent)
     d->view->rootContext()->setContextProperty("DownloadManager", downloadManager);
 
     if (BrowserAppInfo::webApp()) {
-        MprisPlayer *mprisPlayer = new MprisPlayer(this);
-        d->view->rootContext()->setContextProperty("MprisPlayer", mprisPlayer);
+        Amber::MprisPlayer *mprisPlayer = new Amber::MprisPlayer(this);
+        mprisPlayer->setServiceName(QStringLiteral("sailfish-browser.w") + BrowserAppInfo::webAppId());
+        mprisPlayer->setIdentity(webAppIdentity(QUrl(BrowserAppInfo::webAppUrl())));
+        mprisPlayer->setDesktopEntry(QStringLiteral("sailfish-browser"));
+        mprisPlayer->setCanControl(true);
+        mprisPlayer->setCanPlay(true);
+        mprisPlayer->setCanPause(true);
+        d->view->rootContext()->setContextProperty("WebAppMpris", mprisPlayer);
     } else {
-        d->view->rootContext()->setContextProperty("MprisPlayer", nullptr);
+        d->view->rootContext()->setContextProperty("WebAppMpris", nullptr);
     }
 
     QString mainQml = BrowserAppInfo::webApp() ? "webapp.qml"

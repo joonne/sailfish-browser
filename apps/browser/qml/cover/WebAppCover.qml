@@ -4,17 +4,15 @@
 
 import QtQuick 2.2
 import Sailfish.Silica 1.0
+import Amber.Mpris 1.0
 
 CoverBackground {
     id: cover
 
-    readonly property var _metadata: MprisPlayer ? MprisPlayer.Metadata : ({})
-    readonly property string _title: _metadata["xesam:title"] || ""
-    readonly property string _artist: {
-        var a = _metadata["xesam:artist"]
-        return (a && a.length > 0) ? a[0] : ""
-    }
-    readonly property string _artUrl: _metadata["mpris:artUrl"] || ""
+    readonly property var _metaData: WebAppMpris ? WebAppMpris.metaData : null
+    readonly property string _title: _metaData && _metaData.title ? _metaData.title : ""
+    readonly property string _artist: _metaData && _metaData.contributingArtist ? _metaData.contributingArtist : ""
+    readonly property string _artUrl: _metaData && _metaData.artUrl ? _metaData.artUrl : ""
     readonly property bool _hasMedia: _title.length > 0 || _artUrl.length > 0
 
     Image {
@@ -70,12 +68,12 @@ CoverBackground {
         enabled: cover._hasMedia
 
         CoverAction {
-            iconSource: MprisPlayer && MprisPlayer.PlaybackStatus === "Playing"
+            iconSource: WebAppMpris && WebAppMpris.playbackStatus === Mpris.Playing
                         ? "image://theme/icon-cover-pause"
                         : "image://theme/icon-cover-play"
             onTriggered: {
-                if (MprisPlayer) {
-                    MprisPlayer.PlayPause()
+                if (WebAppMpris) {
+                    WebAppMpris.playPauseRequested()
                 }
             }
         }
@@ -83,8 +81,8 @@ CoverBackground {
         CoverAction {
             iconSource: "image://theme/icon-cover-next-song"
             onTriggered: {
-                if (MprisPlayer && MprisPlayer.CanGoNext) {
-                    MprisPlayer.Next()
+                if (WebAppMpris && WebAppMpris.canGoNext) {
+                    WebAppMpris.nextRequested()
                 }
             }
         }

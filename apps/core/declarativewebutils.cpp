@@ -30,7 +30,7 @@
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
 
-#include "mdconfitemcompat.h"
+#include <MDConfItem>
 
 #include <webengine.h>
 #include <webenginesettings.h>
